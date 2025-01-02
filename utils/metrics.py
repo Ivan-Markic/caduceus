@@ -42,45 +42,82 @@ class MultiClassDiceLoss(nn.Module):
             
         return total_loss / self.num_classes
 
-class MultiClassDiceScore:
+class SegmentationMetrics:
     def __init__(self, num_classes: int = 3, smooth: float = 1e-6):
         self.num_classes = num_classes
         self.smooth = smooth
-        self.class_names = ['background', 'kidney', 'tumor']
-        
+        self.class_mapping = {
+            0: 'background',
+            1: 'kidney',
+            2: 'tumor'
+        }
+
     def __call__(self, pred: torch.Tensor, target: torch.Tensor) -> Dict[str, float]:
         """
-        Calculate Dice score for each class
+        Calculate Dice score and IoU for each class
         Args:
-            pred: (B, C, H, W) logits
-            target: (B, 1, H, W) with class indices
+            pred: (N, C, H, W) tensor of predictions (before softmax)
+            target: (N, H, W) tensor of ground truth labels
         Returns:
-            Dictionary with dice scores for each class
+            Dictionary containing dice scores and IoU for each class and means
         """
-        # Remove channel dimension from target
-        target = target.squeeze(1)
-        
-        # Convert predictions to class indices
         pred = torch.softmax(pred, dim=1)
         pred = torch.argmax(pred, dim=1)
         
-        dice_scores = {}
+        scores = {}
+        dice_scores = []
+        iou_scores = []
+        kt_dice_scores = []
+        kt_iou_scores = []
         
-        for class_idx in range(self.num_classes):
-            pred_class = (pred == class_idx).float()
-            target_class = (target == class_idx).float()
+        # Calculate scores for each class
+        for i in range(self.num_classes):
+            pred_class = (pred == i)
+            target_class = (target == i)
             
-            intersection = (pred_class * target_class).sum()
-            union = pred_class.sum() + target_class.sum()
+            # Calculate Dice score
+            dice = self._dice_score(pred_class, target_class)
+            scores[f'{self.class_mapping[i]}_dice'] = dice
+            dice_scores.append(dice)
             
-            # Only use smoothing if there are actual pixels of this class
-            if union > 0:
-                dice = (2.0 * intersection + self.smooth) / (union + self.smooth)
-            else:
-                dice = torch.tensor(0.0)  # If no pixels of this class exist
+            # Calculate IoU score
+            iou = self._iou_score(pred_class, target_class)
+            scores[f'{self.class_mapping[i]}_iou'] = iou
+            iou_scores.append(iou)
             
-            dice_scores[self.class_names[class_idx]] = dice.item()
+            # Collect kidney and tumor scores
+            if i > 0:  # Skip background
+                kt_dice_scores.append(dice)
+                kt_iou_scores.append(iou)
         
-        # Calculate mean dice
-        dice_scores['mean'] = sum(dice_scores.values()) / self.num_classes
-        return dice_scores
+        # Calculate means
+        scores['mean_dice'] = sum(dice_scores) / len(dice_scores)
+        scores['mean_iou'] = sum(iou_scores) / len(iou_scores)
+        scores['mean_kt_dice'] = sum(kt_dice_scores) / len(kt_dice_scores)
+        scores['mean_kt_iou'] = sum(kt_iou_scores) / len(kt_iou_scores)
+        
+        return scores
+    
+    def _dice_score(self, pred: torch.Tensor, target: torch.Tensor) -> float:
+        """Calculate Dice score for a single class"""
+        intersection = (pred * target).sum()
+        union = pred.sum() + target.sum()
+        
+        if union > 0:
+            dice = (2.0 * intersection + self.smooth) / (union + self.smooth)
+        else:
+            dice = torch.tensor(1.0, device=pred.device)  # Perfect score if both are empty
+            
+        return dice.item()
+    
+    def _iou_score(self, pred: torch.Tensor, target: torch.Tensor) -> float:
+        """Calculate IoU score for a single class"""
+        intersection = (pred * target).sum()
+        union = pred.sum() + target.sum() - intersection
+        
+        if union > 0:
+            iou = (intersection + self.smooth) / (union + self.smooth)
+        else:
+            iou = torch.tensor(1.0, device=pred.device)  # Perfect score if both are empty
+            
+        return iou.item()
