@@ -35,6 +35,7 @@ MANIFEST
 # Installer logs
 pip-log.txt
 pip-delete-this-directory.txt
+logs/
 
 # Unit test / coverage reports
 htmlcov/
@@ -141,6 +142,16 @@ phanesEnv/
 
 # mkdocs documentation
 /site
+
+# Data
+data/
+preprocessed_data/
+checkpoints/
+predictions/
+preprocessed_data/
+
+# ipynb
+*.ipynb
 
 # mypy
 .mypy_cache/
