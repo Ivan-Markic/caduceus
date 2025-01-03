@@ -4,6 +4,33 @@ This project implements a UNet model for kidney and tumor segmentation using the
 
 ## Setup and Training Pipeline
 
+### Prerequisites
+First, install all required dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+Required packages:
+- Deep Learning Framework
+    - torch==2.1.2
+    - torchvision==0.16.2
+
+- Medical Image Processing
+    - nibabel==5.2.0
+
+- Image Processing and Data Manipulation
+    - numpy==1.24.3
+    - opencv-python==4.9.0.80
+    - albumentations==1.3.1
+
+- Progress Bars and CLI
+    - tqdm==4.66.1
+    - click==8.1.7
+
+- Logging
+    - wandb==0.15.11
+
 ### 1. Data Preprocessing
 First, run the data conversion script to preprocess the KiTS19 dataset:
 
