@@ -13,10 +13,10 @@ from training.trainer import Trainer
               help='Path to preprocessed dataset directory')
 @click.option('--checkpoint-dir', type=click.Path(), required=True,
               help='Directory to save model checkpoints')
-@click.option('--wandb-project', type=str, default='kidney-segmentation',
+@click.option('--wandb-project', type=str, default='from_scratch_unet',
               help='WandB project name')
-@click.option('--wandb-run-name', type=str, default=None,
-              help='WandB run name (default: auto-generated)')
+@click.option('--wandb-run-name', type=str, default='unet-training-run-',
+              help='WandB run name (default: unet-training-run-{{epoch}})')
 @click.option('--batch-size', type=int, default=4,
               help='Batch size for training')
 @click.option('--num-epochs', type=int, default=100,
@@ -25,10 +25,12 @@ from training.trainer import Trainer
               help='Learning rate')
 @click.option('--device', type=str, default='cuda',
               help='Device to use for training (cuda/cpu)')
-@click.option('--num-workers', type=int, default=4,
+@click.option('--num-workers', type=int, default=0,
               help='Number of workers for data loading')
+@click.option('--patience', type=int, default=10,
+              help='Number of epochs to wait for improvement before early stopping')
 def main(data_dir, checkpoint_dir, wandb_project, wandb_run_name, batch_size, 
-         num_epochs, learning_rate, device, num_workers):
+         num_epochs, learning_rate, device, num_workers, patience):
     
     # Initialize wandb
     wandb.init(
@@ -39,7 +41,9 @@ def main(data_dir, checkpoint_dir, wandb_project, wandb_run_name, batch_size,
             "batch_size": batch_size,
             "num_epochs": num_epochs,
             "architecture": "UNet",
-            "dataset": "KiTS19"
+            "dataset": "KiTS19",
+            "patience": patience,
+            "device": device
         }
     )
     
@@ -80,26 +84,22 @@ def main(data_dir, checkpoint_dir, wandb_project, wandb_run_name, batch_size,
     # Create optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     
-    # Create trainer
+    # Create trainer with early stopping
     trainer = Trainer(
         model=model,
         optimizer=optimizer,
         device=device,
-        checkpoint_dir=checkpoint_dir
+        checkpoint_dir=checkpoint_dir,
+        patience=patience  # Use the patience from command line
     )
     
-    # Training loop
+    # Training loop with early stopping
     print("Starting training...")
-    for epoch in range(num_epochs):
-        # Train
-        train_metrics = trainer.train_epoch(train_loader, epoch)
-        print(f"Epoch {epoch+1} Training - Loss: {train_metrics['train/loss']:.4f}, "
-              f"Dice KT: {train_metrics['train/dice_mean_kt']:.4f}")
-        
-        # Validate
-        val_metrics = trainer.validate(val_loader, epoch)
-        print(f"Epoch {epoch+1} Validation - Loss: {val_metrics['val/loss']:.4f}, "
-              f"Dice KT: {val_metrics['val/dice_mean_kt']:.4f}")
+    best_metrics = trainer.train(train_loader, val_loader, num_epochs)
+    
+    print("\nTraining finished!")
+    print(f"Best validation loss: {best_metrics['val/loss']:.4f}")
+    print(f"Best validation Dice KT: {best_metrics['val/dice_mean_kt']:.4f}")
     
     wandb.finish()
 

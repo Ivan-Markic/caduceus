@@ -5,11 +5,6 @@ import multiprocessing as mp
 from pathlib import Path
 from tqdm import tqdm
 
-def apply_window(image, window_level, window_width):
-    min_value = window_level - window_width // 2
-    max_value = window_level + window_width // 2
-    return np.clip(image, min_value, max_value)
-
 def normalize_image(image):
     min_val = image.min()
     max_val = image.max()
@@ -81,11 +76,9 @@ def convert_case(args):
               help='Path to KiTS19 data directory')
 @click.option('--output-dir', type=click.Path(), required=True,
               help='Path to save converted .npy files')
-@click.option('--window-width', default=80, help='Window width for CT windowing')
-@click.option('--window-level', default=40, help='Window level for CT windowing')
 @click.option('--num-workers', default=-1, help='Number of worker processes (-1 for all cores)')
 @click.option('--num-cases', default=0, help='Number of cases to process (0 for all)')
-def convert_dataset(data_dir, output_dir, window_width, window_level, num_workers, num_cases):
+def convert_dataset(data_dir, output_dir, num_workers, num_cases):
     """Convert KiTS19 .nii.gz files to preprocessed .npy slices using parallel processing."""
     
     data_dir = Path(data_dir)

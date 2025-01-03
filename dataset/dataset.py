@@ -32,9 +32,9 @@ class CTDataset(Dataset):
             case_dir = self.data_dir / case_name
             
             # Skip if case directory doesn't exist
-            #if not case_dir.exists():
-            #     print(f"Warning: Case directory not found: {case_dir}")
-            #     continue
+            if not case_dir.exists():
+                 print(f"Warning: Case directory not found: {case_dir}")
+                 continue
                 
             # Apply case filter if provided
             if case_filter and case_name != case_filter:
@@ -42,9 +42,9 @@ class CTDataset(Dataset):
                 
             # Get all slices for this case
             image_paths = sorted(list((case_dir / 'images').glob('slice_*.npy')))
-            #if not image_paths:
-            #     print(f"Warning: No image slices found in {case_dir / 'images'}")
-            #     continue
+            if not image_paths:
+                 print(f"Warning: No image slices found in {case_dir / 'images'}")
+                 continue
             
             self.image_paths.extend(image_paths)
             
