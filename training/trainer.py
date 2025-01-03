@@ -1,252 +1,278 @@
+import wandb
 import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader
 from pathlib import Path
-import json
-from tqdm import tqdm
-import logging
-from typing import Dict, Optional
+from typing import Dict, List
 import numpy as np
-
-from utils.metrics import MultiClassDiceScore
+from tqdm import tqdm
+from utils.metrics import SegmentationMetrics, MultiClassDiceLoss
 
 class Trainer:
-    def __init__(
-        self,
-        model: nn.Module,
-        train_loader: DataLoader,
-        val_loader: DataLoader,
-        criterion: nn.Module,
-        optimizer: torch.optim.Optimizer,
-        device: str,
-        scheduler: Optional[torch.optim.lr_scheduler._LRScheduler] = None,
-        num_epochs: int = 100,
-        patience: int = 10,
-        checkpoint_dir: str = "checkpoints",
-        log_dir: str = "logs"
-    ):
+    def __init__(self, 
+                 model: torch.nn.Module,
+                 optimizer: torch.optim.Optimizer,
+                 device: str,
+                 checkpoint_dir: Path,
+                 num_classes: int = 3):
         self.model = model
-        self.train_loader = train_loader
-        self.val_loader = val_loader
-        self.criterion = criterion
         self.optimizer = optimizer
         self.device = device
-        self.scheduler = scheduler
-        self.num_epochs = num_epochs
-        self.patience = patience
-        
-        # Create directories
         self.checkpoint_dir = Path(checkpoint_dir)
-        self.log_dir = Path(log_dir)
-        self.checkpoint_dir.mkdir(exist_ok=True)
-        self.log_dir.mkdir(exist_ok=True)
+        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         
-        self.dice_metric = MultiClassDiceScore()
-        self.best_mean_dice = 0.0
-        self.epochs_without_improvement = 0
+        self.criterion = MultiClassDiceLoss(num_classes=num_classes)
+        self.metrics = SegmentationMetrics(num_classes=num_classes)
+        self.best_loss = float('inf')
         
-    def _log_case_metrics(self, case_id: str, metrics: Dict, phase: str, epoch: int):
-        """Log metrics for a specific case."""
-        log_file = self.log_dir / f"{case_id}_{phase}_metrics.json"
+    def _collect_case_metrics(self, metrics_list: List[Dict]) -> Dict:
+        """
+        Organize metrics by case, averaging scores across all slices of the same case
+        Args:
+            metrics_list: List of metrics dictionaries, where each dictionary contains metrics for one or more slices
+                         belonging to the same case_id that were present in the batch
+        """
+        metrics_dict = {}
         
-        # Load existing metrics if file exists
-        if log_file.exists():
-            with open(log_file, 'r') as f:
-                case_history = json.load(f)
-        else:
-            case_history = {}
-            
-        # Add new metrics
-        case_history[f"epoch_{epoch}"] = metrics
-        
-        # Save updated metrics
-        with open(log_file, 'w') as f:
-            json.dump(case_history, f, indent=2)
-    
-    def train_epoch(self, epoch: int) -> Dict[str, float]:
+        metrics_dict['background_dice'] = np.mean([metrics['background_dice'] for metrics in metrics_list])
+        metrics_dict['kidney_dice'] = np.mean([metrics['kidney_dice'] for metrics in metrics_list])
+        metrics_dict['tumor_dice'] = np.mean([metrics['tumor_dice'] for metrics in metrics_list])
+        metrics_dict['mean_dice'] = np.mean([metrics['mean_dice'] for metrics in metrics_list])
+        metrics_dict['mean_kt_dice'] = np.mean([metrics['mean_kt_dice'] for metrics in metrics_list])
+        metrics_dict['background_iou'] = np.mean([metrics['background_iou'] for metrics in metrics_list])
+        metrics_dict['kidney_iou'] = np.mean([metrics['kidney_iou'] for metrics in metrics_list])
+        metrics_dict['tumor_iou'] = np.mean([metrics['tumor_iou'] for metrics in metrics_list])
+        metrics_dict['mean_iou'] = np.mean([metrics['mean_iou'] for metrics in metrics_list])
+        metrics_dict['mean_kt_iou'] = np.mean([metrics['mean_kt_iou'] for metrics in metrics_list])
+
+        return metrics_dict
+
+    def train_epoch(self, dataloader, epoch: int):
         self.model.train()
-        epoch_loss = 0
+        epoch_losses = []
+        all_metrics = {}
+        
+        pbar = tqdm(dataloader, desc=f'Epoch {epoch+1} Training')
+        for batch in pbar:
+            images = batch['image'].to(self.device)
+            masks = batch['mask'].to(self.device)
+            batch_case_ids = batch['case_id']
+            
+            # Forward pass
+            outputs = self.model(images)
+            
+            # Calculate loss
+            loss = self.criterion(outputs, masks)
+            
+            # Store loss
+            epoch_losses.append(loss.item())
+
+            # Calculate metrics
+            for case_id in batch_case_ids:
+                # Get indices for this case in the current batch
+                case_indices = [i for i, bid in enumerate(batch_case_ids) if bid == case_id]
+                case_outputs = outputs[case_indices]
+                case_masks = masks[case_indices]
+                
+                # Calculate metrics for this case's slices
+                metrics = self.metrics(case_outputs, case_masks)
+                
+                # Store metrics for this case
+                if case_id not in all_metrics:
+                    all_metrics[case_id] = []
+                all_metrics[case_id].append(metrics)
+
+            # Backward pass
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.optimizer.step()
+            
+            # Update progress bar
+            pbar.set_postfix({
+                'loss': f'{loss.item():.4f}',
+                'dice_kt': f'{metrics["mean_kt_dice"]:.4f}'
+            })
+
+        per_case_metrics = {}
+        for case_id, metrics_list in all_metrics.items():
+            per_case_metrics[case_id] = self._collect_case_metrics(metrics_list)
+
+        print('==============================================')
+        print('Per case metrics:')
+        for case_id, metrics in per_case_metrics.items():
+            print(f"\nCase: {case_id}")
+            for key, value in metrics.items():
+                print(f"{key}: {value:.4f}")
+
+        # our all_metrics is a dictionary with case_ids as keys and a list of metrics as values
+        # we need to collect the metrics for each case and then average them
+
+        # Calculate epoch metrics with epoch number
         epoch_metrics = {
-            'background': [], 'kidney': [], 'tumor': [], 'mean': []
-        }
-        num_batches = len(self.train_loader)
-        
-        with tqdm(self.train_loader, desc=f"Training Epoch {epoch}") as pbar:
-            for batch in pbar:
-                images = batch['image'].to(self.device)
-                masks = batch['mask'].to(self.device)
-                case_ids = batch['case_id']  # Added case_id to dataset returns
-                
-                self.optimizer.zero_grad()
-                outputs = self.model(images)
-                loss = self.criterion(outputs, masks)
-                
-                loss.backward()
-                self.optimizer.step()
-                
-                # Calculate metrics
-                dice_scores = self.dice_metric(outputs, masks)
-                
-                # Update metrics
-                epoch_loss += loss.item()
-                for key in epoch_metrics:
-                    epoch_metrics[key].append(dice_scores[key])
-                
-                # Log metrics for each case in the batch
-                for idx, case_id in enumerate(case_ids):
-                    case_metrics = {
-                        'loss': loss.item(),
-                        'background_dice': dice_scores['background'],
-                        'kidney_dice': dice_scores['kidney'],
-                        'tumor_dice': dice_scores['tumor'],
-                        'mean_dice': dice_scores['mean']
-                    }
-                    self._log_case_metrics(case_id, case_metrics, 'train', epoch)
-                
-                pbar.set_postfix({
-                    'loss': f'{loss.item():.4f}',
-                    'mean_dice': f'{dice_scores["mean"]:.4f}'
-                })
-        
-        # Calculate epoch averages
-        return {
-            'loss': epoch_loss / num_batches,
-            'background_dice': np.mean(epoch_metrics['background']),
-            'kidney_dice': np.mean(epoch_metrics['kidney']),
-            'tumor_dice': np.mean(epoch_metrics['tumor']),
-            'mean_dice': np.mean(epoch_metrics['mean'])
-        }
-    
-    @torch.no_grad()
-    def validate_epoch(self, epoch: int) -> Dict[str, float]:
-        self.model.eval()
-        epoch_loss = 0
-        epoch_metrics = {
-            'background': [], 'kidney': [], 'tumor': [], 'mean': []
-        }
-        num_batches = len(self.val_loader)
-        
-        with tqdm(self.val_loader, desc="Validation") as pbar:
-            for batch in pbar:
-                images = batch['image'].to(self.device)
-                masks = batch['mask'].to(self.device)
-                case_ids = batch['case_id']
-                
-                outputs = self.model(images)
-                loss = self.criterion(outputs, masks)
-                dice_scores = self.dice_metric(outputs, masks)
-                
-                # Update metrics
-                epoch_loss += loss.item()
-                for key in epoch_metrics:
-                    epoch_metrics[key].append(dice_scores[key])
-                
-                # Log metrics for each case
-                for idx, case_id in enumerate(case_ids):
-                    case_metrics = {
-                        'loss': loss.item(),
-                        'background_dice': dice_scores['background'],
-                        'kidney_dice': dice_scores['kidney'],
-                        'tumor_dice': dice_scores['tumor'],
-                        'mean_dice': dice_scores['mean']
-                    }
-                    self._log_case_metrics(case_id, case_metrics, 'val', epoch)
-                
-                pbar.set_postfix({
-                    'loss': f'{loss.item():.4f}',
-                    'mean_dice': f'{dice_scores["mean"]:.4f}'
-                })
-        
-        return {
-            'loss': epoch_loss / num_batches,
-            'background_dice': np.mean(epoch_metrics['background']),
-            'kidney_dice': np.mean(epoch_metrics['kidney']),
-            'tumor_dice': np.mean(epoch_metrics['tumor']),
-            'mean_dice': np.mean(epoch_metrics['mean'])
-        }
-    
-    def save_checkpoint(self, epoch: int, metrics: dict):
-        """Save model checkpoint if validation performance improves."""
-        current_dice = metrics['val_mean_dice']
-        
-        checkpoint = {
             'epoch': epoch,
-            'model_state_dict': self.model.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict(),
-            'scheduler_state_dict': self.scheduler.state_dict() if self.scheduler else None,
-            'metrics': metrics,
+            'train/loss': np.mean(epoch_losses),
+            'train/dice_background': np.mean([metrics['background_dice'] for metrics in per_case_metrics.values()]),
+            'train/dice_kidney': np.mean([metrics['kidney_dice'] for metrics in per_case_metrics.values()]),
+            'train/dice_tumor': np.mean([metrics['tumor_dice'] for metrics in per_case_metrics.values()]),
+            'train/dice_mean': np.mean([metrics['mean_dice'] for metrics in per_case_metrics.values()]),
+            'train/dice_mean_kt': np.mean([metrics['mean_kt_dice'] for metrics in per_case_metrics.values()]),
+            'train/iou_background': np.mean([metrics['background_iou'] for metrics in per_case_metrics.values()]),
+            'train/iou_kidney': np.mean([metrics['kidney_iou'] for metrics in per_case_metrics.values()]),
+            'train/iou_tumor': np.mean([metrics['tumor_iou'] for metrics in per_case_metrics.values()]),
+            'train/iou_mean': np.mean([metrics['mean_iou'] for metrics in per_case_metrics.values()]),
+            'train/iou_mean_kt': np.mean([metrics['mean_kt_iou'] for metrics in per_case_metrics.values()])
         }
         
-        # Save latest checkpoint
-        latest_path = self.checkpoint_dir / 'latest_model.pth'
-        torch.save(checkpoint, latest_path)
+        # Log metrics to wandb
+        wandb.log(epoch_metrics)
+
+        dice_table_data = []
+        iou_table_data = []
+        for case_id, metrics in per_case_metrics.items():
+            dice_table_data.append([
+                case_id, 
+                metrics['background_dice'], 
+                metrics['kidney_dice'], 
+                metrics['tumor_dice'],
+                metrics['mean_kt_dice'],
+            ])
+
+            iou_table_data.append([
+                case_id, 
+                metrics['background_iou'], 
+                metrics['kidney_iou'], 
+                metrics['tumor_iou'],
+                metrics['mean_kt_iou'],
+            ])
+
+        # Log tables with epoch information
+        wandb.log({
+            f"train/Dice Per Case Epoch {epoch}": wandb.Table(
+                data=dice_table_data,
+                columns=['Case ID', 'Background', 'Kidney', 'Tumor', 'Mean KT']
+            ),
+            f"train/IoU Per Case Epoch {epoch}": wandb.Table(
+                data=iou_table_data,
+                columns=['Case ID', 'Background', 'Kidney', 'Tumor', 'Mean KT']
+            ),
+            'epoch': epoch
+        })
         
-        # Save best model if performance improves
-        if current_dice > self.best_mean_dice:
-            self.best_mean_dice = current_dice
-            best_path = self.checkpoint_dir / 'best_model.pth'
-            torch.save(checkpoint, best_path)
-            print(f"\nSaved best model with mean dice: {current_dice:.4f}")
-    
-    def train(self):
-        try:
-            for epoch in range(self.num_epochs):
-                print(f"\nEpoch {epoch+1}/{self.num_epochs}")
+        return epoch_metrics
+
+    def validate(self, dataloader, epoch: int):
+        self.model.eval()
+        val_losses = []
+        all_metrics = {}  # Dictionary to store metrics per case
+        
+        pbar = tqdm(dataloader, desc=f'Epoch {epoch+1} Validation')
+        with torch.no_grad():
+            for batch in pbar:
+                images = batch['image'].to(self.device)
+                masks = batch['mask'].to(self.device)
+                batch_case_ids = batch['case_id']
                 
-                train_metrics = self.train_epoch(epoch)
-                val_metrics = self.validate_epoch(epoch)
+                outputs = self.model(images)
+                loss = self.criterion(outputs, masks)
+                val_losses.append(loss.item())
                 
-                metrics = {
-                    'train_loss': train_metrics['loss'],
-                    'train_background_dice': train_metrics['background_dice'],
-                    'train_kidney_dice': train_metrics['kidney_dice'],
-                    'train_tumor_dice': train_metrics['tumor_dice'],
-                    'train_mean_dice': train_metrics['mean_dice'],
-                    'val_loss': val_metrics['loss'],
-                    'val_background_dice': val_metrics['background_dice'],
-                    'val_kidney_dice': val_metrics['kidney_dice'],
-                    'val_tumor_dice': val_metrics['tumor_dice'],
-                    'val_mean_dice': val_metrics['mean_dice']
-                }
-                
-                print(
-                    f"Train - Loss: {metrics['train_loss']:.4f}, "
-                    f"Background: {metrics['train_background_dice']:.4f}, "
-                    f"Kidney: {metrics['train_kidney_dice']:.4f}, "
-                    f"Tumor: {metrics['train_tumor_dice']:.4f}, "
-                    f"Mean: {metrics['train_mean_dice']:.4f}"
-                )
-                print(
-                    f"Val - Loss: {metrics['val_loss']:.4f}, "
-                    f"Background: {metrics['val_background_dice']:.4f}, "
-                    f"Kidney: {metrics['val_kidney_dice']:.4f}, "
-                    f"Tumor: {metrics['val_tumor_dice']:.4f}, "
-                    f"Mean: {metrics['val_mean_dice']:.4f}"
-                )
-                
-                if self.scheduler is not None:
-                    self.scheduler.step(metrics['val_loss'])
-                
-                self.save_checkpoint(epoch, metrics)
-                
-                # Early stopping based on mean dice
-                if metrics['val_mean_dice'] > self.best_mean_dice:
-                    self.best_mean_dice = metrics['val_mean_dice']
-                    self.epochs_without_improvement = 0
-                else:
-                    self.epochs_without_improvement += 1
+                # Calculate metrics per case in batch
+                for case_id in batch_case_ids:
+                    # Get indices for this case in the current batch
+                    case_indices = [i for i, bid in enumerate(batch_case_ids) if bid == case_id]
+                    case_outputs = outputs[case_indices]
+                    case_masks = masks[case_indices]
                     
-                if self.epochs_without_improvement >= self.patience:
-                    print(f"\nEarly stopping after {epoch+1} epochs")
-                    break
+                    # Calculate metrics for this case's slices
+                    metrics = self.metrics(case_outputs, case_masks)
+                    
+                    print(f"\nValidation batch metrics for case {case_id}:")
+                    print(f"Number of slices: {len(case_outputs)}")
+                    print(f"Background - Dice: {metrics['background_dice']:.4f}, IoU: {metrics['background_iou']:.4f}")
+                    print(f"Kidney    - Dice: {metrics['kidney_dice']:.4f}, IoU: {metrics['kidney_iou']:.4f}")
+                    print(f"Tumor     - Dice: {metrics['tumor_dice']:.4f}, IoU: {metrics['tumor_iou']:.4f}")
+                    
+                    # Store metrics for this case
+                    if case_id not in all_metrics:
+                        all_metrics[case_id] = []
+                    all_metrics[case_id].append(metrics)
                 
-        except KeyboardInterrupt:
-            print("\nTraining interrupted. Saving current state...")
+                # Update progress bar
+                pbar.set_postfix({
+                    'loss': f'{loss.item():.4f}'
+                })
+
+        # Calculate per-case metrics
+        per_case_metrics = {}
+        for case_id, metrics_list in all_metrics.items():
+            per_case_metrics[case_id] = self._collect_case_metrics(metrics_list)
+
+        # Calculate validation metrics
+        val_metrics = {
+            'epoch': epoch,
+            'val/loss': np.mean(val_losses),
+            'val/dice_background': np.mean([metrics['background_dice'] for metrics in per_case_metrics.values()]),
+            'val/dice_kidney': np.mean([metrics['kidney_dice'] for metrics in per_case_metrics.values()]),
+            'val/dice_tumor': np.mean([metrics['tumor_dice'] for metrics in per_case_metrics.values()]),
+            'val/dice_mean': np.mean([metrics['mean_dice'] for metrics in per_case_metrics.values()]),
+            'val/dice_mean_kt': np.mean([metrics['mean_kt_dice'] for metrics in per_case_metrics.values()]),
+            'val/iou_background': np.mean([metrics['background_iou'] for metrics in per_case_metrics.values()]),
+            'val/iou_kidney': np.mean([metrics['kidney_iou'] for metrics in per_case_metrics.values()]),
+            'val/iou_tumor': np.mean([metrics['tumor_iou'] for metrics in per_case_metrics.values()]),
+            'val/iou_mean': np.mean([metrics['mean_iou'] for metrics in per_case_metrics.values()]),
+            'val/iou_mean_kt': np.mean([metrics['mean_kt_iou'] for metrics in per_case_metrics.values()])
+        }
+
+        # Create tables for wandb
+        dice_table_data = []
+        iou_table_data = []
+        
+        for case_id, metrics in per_case_metrics.items():
+            dice_table_data.append([
+                case_id,
+                metrics['background_dice'],
+                metrics['kidney_dice'],
+                metrics['tumor_dice']
+            ])
+            
+            iou_table_data.append([
+                case_id,
+                metrics['background_iou'],
+                metrics['kidney_iou'],
+                metrics['tumor_iou']
+            ])
+
+        # Log tables to wandb
+        wandb.log({
+            f"val/Dice Per Case Epoch {epoch}": wandb.Table(
+                data=dice_table_data,
+                columns=['Case ID', 'Background', 'Kidney', 'Tumor']
+            ),
+            f"val/IoU Per Case Epoch {epoch}": wandb.Table(
+                data=iou_table_data,
+                columns=['Case ID', 'Background', 'Kidney', 'Tumor']
+            ),
+            'epoch': epoch
+        })
+
+        # Save model if loss improved
+        if np.mean(val_losses) < self.best_loss:
+            self.best_loss = np.mean(val_losses)
+            model_path = self.checkpoint_dir / f'model_epoch_{epoch}_loss_{np.mean(val_losses):.4f}.pth'
+            
+            # Save local checkpoint
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': self.model.state_dict(),
                 'optimizer_state_dict': self.optimizer.state_dict(),
-                'scheduler_state_dict': self.scheduler.state_dict() if self.scheduler else None,
-            }, Path(self.checkpoint_dir) / 'interrupted.pth')
-            print("Saved interrupted.pth")
-            raise KeyboardInterrupt
+                'loss': np.mean(val_losses),
+            }, model_path)
+            
+            # Save to wandb with epoch information
+            artifact = wandb.Artifact(
+                name=f'model-epoch-{epoch}',
+                type='model',
+                description=f'Model checkpoint from epoch {epoch} with validation loss {np.mean(val_losses):.4f}'
+            )
+            artifact.add_file(str(model_path))
+            wandb.log_artifact(artifact)
+
+        return val_metrics

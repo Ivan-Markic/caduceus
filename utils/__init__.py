@@ -1,1 +1,1 @@
-from .metrics import MultiClassDiceScore, MultiClassDiceLoss
+from .metrics import SegmentationMetrics, MultiClassDiceLoss

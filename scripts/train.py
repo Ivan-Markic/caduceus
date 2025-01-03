@@ -1,28 +1,48 @@
 import click
 import torch
+import wandb
 from torch.utils.data import DataLoader
-from pathlib import Path
 
-from dataset import CTDataset
-from preprocessing.transforms import get_training_transforms, get_validation_transforms
 from models.unet import UNet
-from utils.metrics import MultiClassDiceLoss
+from dataset.dataset import CTDataset
+from preprocessing.transforms import get_training_transforms, get_validation_transforms
 from training.trainer import Trainer
 
 @click.command()
 @click.option('--data-dir', type=click.Path(exists=True), required=True,
               help='Path to preprocessed dataset directory')
-@click.option('--batch-size', type=int, default=8, help='Batch size')
-@click.option('--num-workers', type=int, default=4, help='Number of data loading workers')
-@click.option('--learning-rate', type=float, default=1e-4, help='Learning rate')
-@click.option('--num-epochs', type=int, default=100, help='Number of epochs')
-@click.option('--device', type=str, default='cuda', help='Device to use (cuda/cpu)')
-@click.option('--checkpoint-dir', type=click.Path(), default='checkpoints',
+@click.option('--checkpoint-dir', type=click.Path(), required=True,
               help='Directory to save model checkpoints')
-@click.option('--log-dir', type=click.Path(), default='logs',
-              help='Directory to save training logs')
-def main(data_dir, batch_size, num_workers, learning_rate, num_epochs, 
-         device, checkpoint_dir, log_dir):
+@click.option('--wandb-project', type=str, default='kidney-segmentation',
+              help='WandB project name')
+@click.option('--wandb-run-name', type=str, default=None,
+              help='WandB run name (default: auto-generated)')
+@click.option('--batch-size', type=int, default=4,
+              help='Batch size for training')
+@click.option('--num-epochs', type=int, default=100,
+              help='Number of epochs to train')
+@click.option('--learning-rate', type=float, default=1e-4,
+              help='Learning rate')
+@click.option('--device', type=str, default='cuda',
+              help='Device to use for training (cuda/cpu)')
+@click.option('--num-workers', type=int, default=4,
+              help='Number of workers for data loading')
+def main(data_dir, checkpoint_dir, wandb_project, wandb_run_name, batch_size, 
+         num_epochs, learning_rate, device, num_workers):
+    
+    # Initialize wandb
+    wandb.init(
+        project=wandb_project,
+        name=f'{wandb_run_name}{num_epochs}',
+        config={
+            "learning_rate": learning_rate,
+            "batch_size": batch_size,
+            "num_epochs": num_epochs,
+            "architecture": "UNet",
+            "dataset": "KiTS19"
+        }
+    )
+    
     # Create datasets
     train_dataset = CTDataset(
         data_dir=data_dir,
@@ -57,32 +77,31 @@ def main(data_dir, batch_size, num_workers, learning_rate, num_epochs,
     model = UNet(in_channels=1, out_channels=3)
     model = model.to(device)
     
-    # Create optimizer and loss
+    # Create optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-    criterion = MultiClassDiceLoss()
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer,
-        mode='min',
-        factor=0.1,
-        patience=5,
-        verbose=True
-    )
     
-    # Create trainer with checkpoint and log directories
+    # Create trainer
     trainer = Trainer(
         model=model,
-        train_loader=train_loader,
-        val_loader=val_loader,
-        criterion=criterion,
         optimizer=optimizer,
-        scheduler=scheduler,
         device=device,
-        num_epochs=num_epochs,
-        checkpoint_dir=checkpoint_dir,
-        log_dir=log_dir
+        checkpoint_dir=checkpoint_dir
     )
     
-    trainer.train()
+    # Training loop
+    print("Starting training...")
+    for epoch in range(num_epochs):
+        # Train
+        train_metrics = trainer.train_epoch(train_loader, epoch)
+        print(f"Epoch {epoch+1} Training - Loss: {train_metrics['train/loss']:.4f}, "
+              f"Dice KT: {train_metrics['train/dice_mean_kt']:.4f}")
+        
+        # Validate
+        val_metrics = trainer.validate(val_loader, epoch)
+        print(f"Epoch {epoch+1} Validation - Loss: {val_metrics['val/loss']:.4f}, "
+              f"Dice KT: {val_metrics['val/dice_mean_kt']:.4f}")
+    
+    wandb.finish()
 
 if __name__ == '__main__':
     main()

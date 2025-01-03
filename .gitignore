@@ -37,6 +37,9 @@ pip-log.txt
 pip-delete-this-directory.txt
 logs/
 
+# Wandb
+wandb/
+
 # Unit test / coverage reports
 htmlcov/
 .tox/

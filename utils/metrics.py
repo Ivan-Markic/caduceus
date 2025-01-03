@@ -63,6 +63,7 @@ class SegmentationMetrics:
         """
         pred = torch.softmax(pred, dim=1)
         pred = torch.argmax(pred, dim=1)
+        target = target.squeeze(1)
         
         scores = {}
         dice_scores = []
@@ -84,7 +85,6 @@ class SegmentationMetrics:
             iou = self._iou_score(pred_class, target_class)
             scores[f'{self.class_mapping[i]}_iou'] = iou
             iou_scores.append(iou)
-            
             # Collect kidney and tumor scores
             if i > 0:  # Skip background
                 kt_dice_scores.append(dice)

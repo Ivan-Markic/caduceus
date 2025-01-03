@@ -19,10 +19,9 @@ class CTDataset(Dataset):
         # Define case ranges based on split
         case_ranges = {
             'train': range(63, 210),
-            'valid': range(1, 63),
+            'valid': range(0, 63),
             'test': range(210, 300)
         }
-        case_ranges['test'] = list(case_ranges['test']) + [0]
         
         # Get all slice paths for the given split
         self.image_paths = []
@@ -33,9 +32,9 @@ class CTDataset(Dataset):
             case_dir = self.data_dir / case_name
             
             # Skip if case directory doesn't exist
-            if not case_dir.exists():
-                print(f"Warning: Case directory not found: {case_dir}")
-                continue
+            #if not case_dir.exists():
+            #     print(f"Warning: Case directory not found: {case_dir}")
+            #     continue
                 
             # Apply case filter if provided
             if case_filter and case_name != case_filter:
@@ -43,9 +42,9 @@ class CTDataset(Dataset):
                 
             # Get all slices for this case
             image_paths = sorted(list((case_dir / 'images').glob('slice_*.npy')))
-            if not image_paths:
-                print(f"Warning: No image slices found in {case_dir / 'images'}")
-                continue
+            #if not image_paths:
+            #     print(f"Warning: No image slices found in {case_dir / 'images'}")
+            #     continue
             
             self.image_paths.extend(image_paths)
             

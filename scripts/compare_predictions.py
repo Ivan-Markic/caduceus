@@ -4,7 +4,7 @@ import torch.nn.functional as F
 import numpy as np
 import nibabel as nib
 from pathlib import Path
-from utils.metrics import MultiClassDiceLoss, MultiClassDiceScore
+from utils.metrics import MultiClassDiceLoss, SegmentationMetrics
 
 def print_class_details(pred_tensor, gt_tensor, class_idx, class_name):
     """Debug function to print detailed metrics for a specific class"""
@@ -70,7 +70,7 @@ def main(data_dir, pred_path, case_id):
     gt_tensor_input = gt_tensor
     
     criterion = MultiClassDiceLoss()
-    dice_score = MultiClassDiceScore()
+    dice_score = SegmentationMetrics()
     
     loss = criterion(pred_tensor_input, gt_tensor_input)
     scores = dice_score(pred_tensor_input, gt_tensor_input)

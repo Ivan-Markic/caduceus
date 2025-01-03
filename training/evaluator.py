@@ -5,7 +5,7 @@ from tqdm import tqdm
 import json
 from torch.utils.data import DataLoader
 import nibabel as nib
-from utils.metrics import MultiClassDiceScore
+from utils.metrics import SegmentationMetrics
 
 class Evaluator:
     def __init__(self, model, device, output_dir):
@@ -13,11 +13,14 @@ class Evaluator:
         self.device = device
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(exist_ok=True)
-        self.metric = MultiClassDiceScore()
+        self.metric = SegmentationMetrics()
         
     @torch.no_grad()
     def predict_batch(self, images):
         self.model.eval()
+        # Remove extra dimension if present
+        if images.dim() == 5:
+            images = images.squeeze(0)
         images = images.to(self.device)
         outputs = self.model(images)
         predictions = torch.softmax(outputs, dim=1)
