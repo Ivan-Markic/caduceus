@@ -4,6 +4,7 @@ import numpy as np
 import multiprocessing as mp
 from pathlib import Path
 from tqdm import tqdm
+from skimage.transform import resize
 
 def normalize_image(image):
     min_val = image.min()
@@ -11,6 +12,12 @@ def normalize_image(image):
     if max_val - min_val != 0:
         return (image - min_val) / (max_val - min_val)
     return image
+
+def resize_slice(slice_2d, target_shape=(512, 512)):
+    """Resize a 2D slice to target shape."""
+    if slice_2d.shape == target_shape:
+        return slice_2d
+    return resize(slice_2d, target_shape, mode='constant', anti_aliasing=True)
 
 def convert_case(args):
     """Convert a single case"""
@@ -44,31 +51,46 @@ def convert_case(args):
     image_data = image_nii.get_fdata()
     
     # Save affine matrix
-    np.save(
-        case_output_dir / 'affine.npy',
-        image_nii.affine
-    )
+    np.save(case_output_dir / 'affine.npy', image_nii.affine)
+    
+    # Check if resizing is needed
+    needs_resize = image_data.shape[1:] != (512, 512)
+    if needs_resize:
+        print(f"\nResizing {case_id} from {image_data.shape[1:]} to (512, 512)")
     
     # Process each slice
     for slice_idx in range(image_data.shape[0]):
         image_slice = image_data[slice_idx, :, :]
         
-        # Save raw image slice
+        # Resize if needed
+        if needs_resize:
+            image_slice = resize_slice(image_slice)
+        
+        # Save image slice
         np.save(
             case_output_dir / 'images' / f'slice_{slice_idx:03d}.npy',
             image_slice.astype(np.float32)
         )
         
-        # Save mask slice if not a test case
+        # Process mask if not a test case
         if case_num < 210:  # Not a test case
             mask_path = case_dir / 'segmentation.nii.gz'
             if mask_path.exists():
-                mask_nii = nib.load(str(mask_path))
-                mask_data = mask_nii.get_fdata()
+                if slice_idx == 0:  # Load mask only once
+                    mask_nii = nib.load(str(mask_path))
+                    mask_data = mask_nii.get_fdata()
+                
                 mask_slice = mask_data[slice_idx, :, :]
+                
+                # Resize mask if needed
+                if needs_resize:
+                    mask_slice = resize_slice(mask_slice)
+                    # Round mask values after resize to ensure binary/integer values
+                    mask_slice = np.round(mask_slice).astype(np.uint8)
+                
                 np.save(
                     case_output_dir / 'masks' / f'slice_{slice_idx:03d}.npy',
-                    mask_slice.astype(np.uint8)
+                    mask_slice
                 )
 
 @click.command()
