@@ -215,6 +215,9 @@ class Trainer:
             'val/iou_mean_kt': np.mean([metrics['mean_kt_iou'] for metrics in per_case_metrics.values()])
         }
 
+        # Log metrics to wandb
+        wandb.log(val_metrics)
+
         # Create tables for wandb
         dice_table_data = []
         iou_table_data = []
@@ -236,6 +239,7 @@ class Trainer:
                 metrics['mean_kt_iou']
             ])
 
+
         # Log tables to wandb
         wandb.log({
             f"val/Dice Per Case Epoch {epoch}": wandb.Table(
@@ -248,29 +252,6 @@ class Trainer:
             ),
             'epoch': epoch
         })
-
-        # Save model if loss improved
-        if np.mean(val_losses) < self.best_loss:
-            self.best_loss = np.mean(val_losses)
-            model_path = self.checkpoint_dir / f'model_epoch_{epoch}_loss_{np.mean(val_losses):.4f}.pth'
-            
-            # Save local checkpoint
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': self.model.state_dict(),
-                'optimizer_state_dict': self.optimizer.state_dict(),
-                'loss': np.mean(val_losses),
-            }, model_path)
-            
-            # Save to wandb with epoch information
-            artifact = wandb.Artifact(
-                name=f'model-epoch-{epoch}',
-                type='model',
-                description=f'Model checkpoint from epoch {epoch} with validation loss {np.mean(val_losses):.4f}'
-            )
-            artifact.add_file(str(model_path))
-            wandb.log_artifact(artifact)
-
         return val_metrics
 
     def train(self, train_loader, val_loader, num_epochs):
