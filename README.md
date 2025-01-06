@@ -70,6 +70,24 @@ Training features:
 - Dice loss and metrics for kidney and tumor segmentation
 - Progress monitoring with validation metrics
 
+### 3. Model Evaluation
+After training, evaluate the model's performance on all cases:
+
+```bash
+python -m scripts.evaluate_model \
+    --data-dir preprocessed_data \
+    --model-path checkpoints/unet/model_epoch_19_loss_0.5370.pth \
+    --batch-size 12 \
+    --device cuda
+```
+
+Evaluation features:
+- Comprehensive metrics for all cases (0-210)
+- Per-case Dice and IoU scores
+- WandB logging with detailed tables
+- Validation metrics for kidney and tumor segmentation
+- Uses same validation pipeline as training
+
 ## Model Architecture
 - UNet with 1 input channel and 3 output channels (background, kidney, tumor)
 - Trained using Adam optimizer

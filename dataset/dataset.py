@@ -20,7 +20,8 @@ class CTDataset(Dataset):
         case_ranges = {
             'train': range(63, 210),
             'valid': range(0, 63),
-            'test': range(210, 300)
+            'test': range(210, 300),
+            'eval': range(0, 210)
         }
         
         # Get all slice paths for the given split
