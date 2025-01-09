@@ -94,9 +94,9 @@ def convert_case(args):
                 )
 
 @click.command()
-@click.option('--data-dir', type=click.Path(exists=True), default='../kits19-challenge/kits19',
+@click.option('--data-dir', '-d', type=click.Path(exists=True), default='../kits19-challenge/kits19',
               help='Path to KiTS19 data directory')
-@click.option('--output-dir', type=click.Path(), default='preprocessed_data',
+@click.option('--output-dir', '-o', type=click.Path(), default='preprocessed_data',
               help='Path to save converted .npy files')
 @click.option('--num-workers', default=-1, help='Number of worker processes (-1 for all cores)')
 @click.option('--num-cases', default=0, help='Number of cases to process (0 for all)')

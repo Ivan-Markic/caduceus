@@ -21,15 +21,18 @@ class CTDataset(Dataset):
             'train': range(63, 210),
             'valid': range(0, 63),
             'test': range(210, 300),
-            'eval': range(0, 210)
+            'eval': range(0, 210),
+            'predict': range(2, 300)
         }
-        
+
+        self.case_ids = []
         # Get all slice paths for the given split
         self.image_paths = []
         self.mask_paths = []
         
         for case_id in case_ranges[split]:
             case_name = f'case_{case_id:05d}'
+            self.case_ids.append(case_name)
             case_dir = self.data_dir / case_name
             
             # Skip if case directory doesn't exist
@@ -78,7 +81,7 @@ class CTDataset(Dataset):
         affine = self.get_affine(case_id)
         
         # For test set, we don't load masks
-        if self.split == 'test':
+        if self.split == 'test' or self.split == 'predict':
             if self.transform is not None:
                 transformed = self.transform(image=image)
                 image = np.array(transformed['image'])
