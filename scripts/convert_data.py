@@ -32,7 +32,7 @@ def convert_case(args):
     # Check if case is already processed
     if case_output_dir.exists():
         # Check if at least one slice exists
-        if list((case_output_dir / 'images').glob('slice_*.npy')):
+        if list((case_output_dir / 'images').glob('slice_*.npy')) and case_id != 'case_00160':
             print(f"Skipping {case_id}: already processed")
             return
     
@@ -94,9 +94,9 @@ def convert_case(args):
                 )
 
 @click.command()
-@click.option('--data-dir', type=click.Path(exists=True), required=True,
+@click.option('--data-dir', type=click.Path(exists=True), default='../kits19-challenge/kits19',
               help='Path to KiTS19 data directory')
-@click.option('--output-dir', type=click.Path(), required=True,
+@click.option('--output-dir', type=click.Path(), default='preprocessed_data',
               help='Path to save converted .npy files')
 @click.option('--num-workers', default=-1, help='Number of worker processes (-1 for all cores)')
 @click.option('--num-cases', default=0, help='Number of cases to process (0 for all)')
