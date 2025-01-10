@@ -22,91 +22,114 @@ class CTDataset(Dataset):
             'valid': range(0, 63),
             'test': range(210, 300),
             'eval': range(0, 210),
-            'predict': range(2, 300)
+            'predict': range(0, 300)
         }
 
-        self.case_ids = []
-        # Get all slice paths for the given split
-        self.image_paths = []
-        self.mask_paths = []
+        # Dictionary to store paths organized by case
+        self.cases = {}
         
         for case_id in case_ranges[split]:
             case_name = f'case_{case_id:05d}'
-            self.case_ids.append(case_name)
             case_dir = self.data_dir / case_name
             
             # Skip if case directory doesn't exist
             if not case_dir.exists():
-                 print(f"Warning: Case directory not found: {case_dir}")
-                 continue
+                print(f"Warning: Case directory not found: {case_dir}")
+                continue
                 
             # Apply case filter if provided
             if case_filter and case_name != case_filter:
                 continue
-                
+            
             # Get all slices for this case
             image_paths = sorted(list((case_dir / 'images').glob('slice_*.npy')))
             if not image_paths:
-                 print(f"Warning: No image slices found in {case_dir / 'images'}")
-                 continue
+                print(f"Warning: No image slices found in {case_dir / 'images'}")
+                continue
+
+            # Get affine matrix from case_dir / affine.npy
+            affine = np.load(case_dir / 'affine.npy')
             
-            self.image_paths.extend(image_paths)
-            
-            if split != 'test':
+            # Get mask paths if needed
+            mask_paths = []
+            if split != 'test' and split != 'predict':
                 mask_paths = sorted(list((case_dir / 'masks').glob('slice_*.npy')))
                 if len(image_paths) != len(mask_paths):
                     raise ValueError(f"Number of images ({len(image_paths)}) and masks ({len(mask_paths)}) don't match for {case_name}")
-                self.mask_paths.extend(mask_paths)
-        
-        if len(self.image_paths) == 0:
-            raise ValueError(f"No data found for split '{split}' in {data_dir}")
-
-    def get_affine(self, case_id):
-        """Get affine matrix for a given case."""
-        affine_path = self.data_dir / case_id / 'affine.npy'
-        return np.load(affine_path)
-
-    def __len__(self):
-        return len(self.image_paths)
-
-    def __getitem__(self, idx):
-        # Load image and create a new array
-        image = np.array(np.load(self.image_paths[idx]))
-        
-        # Add channel dimension if needed
-        image = np.array(np.expand_dims(image, axis=0))
-        
-        # Get case_id and affine
-        case_id = self.image_paths[idx].parent.parent.name
-        affine = self.get_affine(case_id)
-        
-        # For test set, we don't load masks
-        if self.split == 'test' or self.split == 'predict':
-            if self.transform is not None:
-                transformed = self.transform(image=image)
-                image = np.array(transformed['image'])
             
-            return {
-                'image': torch.from_numpy(image).float(),
-                'path': str(self.image_paths[idx]),
-                'case_id': case_id,
+            # Store paths for this case
+            self.cases[case_name] = {
+                'image_paths': image_paths,
+                'mask_paths': mask_paths,
                 'affine': affine
             }
         
-        # For train/valid, load both image and mask
-        mask = np.array(np.load(self.mask_paths[idx]))
-        mask = np.array(np.expand_dims(mask, axis=0))
+        if len(self.cases) == 0:
+            raise ValueError(f"No data found for split '{split}' in {data_dir}")
         
-        # Apply transforms if any
-        if self.transform is not None:
-            transformed = self.transform(image=image, mask=mask)
-            image = np.array(transformed['image'])
-            mask = np.array(transformed['mask'])
+        # Store case_ids for easy access
+        self.case_ids = sorted(list(self.cases.keys()))
+
+    def get_case_slices(self, case_id):
+        """Get number of slices for a specific case."""
+        return len(self.cases[case_id]['image_paths'])
+
+    def get_case_data(self, case_id, slice_idx):
+        """Get specific slice from a case."""
+        case = self.cases[case_id]
         
-        return {
+        # Load image
+        image = np.array(np.load(case['image_paths'][slice_idx]))
+        image = np.expand_dims(image, axis=0)
+        
+        # Create return dictionary
+        data = {
             'image': torch.from_numpy(image).float(),
-            'mask': torch.from_numpy(mask).long(),
-            'path': str(self.image_paths[idx]),
+            'path': str(case['image_paths'][slice_idx]),
             'case_id': case_id,
-            'affine': affine
+            'affine': case['affine']
         }
+        
+        # Add mask if available
+        if case['mask_paths']:
+            mask = np.array(np.load(case['mask_paths'][slice_idx]))
+            mask = np.expand_dims(mask, axis=0)
+            
+            if self.transform is not None:
+                transformed = self.transform(image=image, mask=mask)
+                image = transformed['image']
+                mask = transformed['mask']
+            
+            data['mask'] = torch.from_numpy(mask).long()
+        elif self.transform is not None:
+            transformed = self.transform(image=image)
+            image = transformed['image']
+            
+        data['image'] = torch.from_numpy(image).float()
+        return data
+
+    def __len__(self):
+        """Total number of slices across all cases."""
+        return len(self.cases)
+
+    def __getitem__(self, idx):
+        """Get a slice by global index."""
+        # Find which case this index belongs to
+        for case_id in self.case_ids:
+            case_len = len(self.cases[case_id]['image_paths'])
+            if idx < case_len:
+                return self.get_case_data(case_id, idx)
+            idx -= case_len
+        raise IndexError("Index out of range")
+
+    def get_affine(self, case_id):
+        """Get affine matrix for a specific case.
+        
+        Args:
+            case_id (str): Case ID (e.g., 'case_00000')
+            
+        Returns:
+            numpy.ndarray: 4x4 affine matrix from the original nifti file
+        """
+        return self.cases[case_id]['affine']
+        

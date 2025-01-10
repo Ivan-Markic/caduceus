@@ -16,7 +16,7 @@ from preprocessing.transforms import get_validation_transforms
               help='Path to trained model checkpoint')
 @click.option('--output-dir', type=click.Path(), default='../kits19-challenge/kits19',
               help='Directory to save predicted masks')
-@click.option('--device', type=str, default='cuda',
+@click.option('--device', type=str, default='cpu',
               help='Device to use for inference')
 def main(data_dir, model_path, output_dir, device):
     # Create output directory
@@ -37,34 +37,26 @@ def main(data_dir, model_path, output_dir, device):
         transform=get_validation_transforms(),
     )
 
-    for index, case_id in enumerate(dataset.case_ids):
-        # Get affine matrix
-        affine = dataset.get_affine(case_id)
-
-        # Initialize 3D array for predicted mask
-        first_slice = np.load(dataset.image_paths[index])
-
-        pred_shape = (len(dataset), *first_slice.shape)
-        predictions = np.zeros(pred_shape, dtype=np.uint8)
+    # Process each case separately
+    for case_id in dataset.case_ids:
+        n_slices = dataset.get_case_slices(case_id)
+        predictions = np.zeros((n_slices, 512, 512), dtype=np.uint8)
         
-        # Generate predicted mask
-        print(f"Generating predicted mask for {case_id}")
+        print(f"Processing case {case_id}")
         with torch.no_grad():
-            for idx in tqdm(range(len(dataset))):
-                batch = dataset[idx]
-                image = batch['image'].unsqueeze(0).to(device)  # Add batch dimension
+            for slice_idx in tqdm(range(n_slices)):
+                batch = dataset.get_case_data(case_id, slice_idx)
+                image = batch['image'].unsqueeze(0).to(device)
                 
-                # Generate prediction
                 output = model(image)
                 pred = torch.softmax(output, dim=1)
                 pred = torch.argmax(pred, dim=1)
-                pred = pred.cpu().numpy()[0]  # Remove batch dimension
+                pred = pred.cpu().numpy()[0]
                 
-                # Store prediction
-                predictions[idx] = pred
+                predictions[slice_idx] = pred
         
         # Create NIFTI image and save
-        nifti_img = nib.Nifti1Image(predictions, affine)
+        nifti_img = nib.Nifti1Image(predictions, batch['affine'])
         output_path = output_dir / f'{case_id}_prediction.nii.gz'
         nib.save(nifti_img, output_path)
         print(f"Saved predicted mask to {output_path}")
