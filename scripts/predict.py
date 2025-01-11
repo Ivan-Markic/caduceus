@@ -16,7 +16,7 @@ from preprocessing.transforms import get_validation_transforms
               help='Path to trained model checkpoint')
 @click.option('--output-dir', type=click.Path(), default='../kits19-challenge/kits19',
               help='Directory to save predicted masks')
-@click.option('--device', type=str, default='cpu',
+@click.option('--device', type=str, default='cuda',
               help='Device to use for inference')
 def main(data_dir, model_path, output_dir, device):
     # Create output directory
@@ -57,9 +57,11 @@ def main(data_dir, model_path, output_dir, device):
         
         # Create NIFTI image and save
         nifti_img = nib.Nifti1Image(predictions, batch['affine'])
-        output_path = output_dir / f'{case_id}_prediction.nii.gz'
-        nib.save(nifti_img, output_path)
-        print(f"Saved predicted mask to {output_path}")
+        nifiti_img_filename = output_dir / f'{case_id}' / f'{case_id}_prediction.nii.gz'
+        nifiti_img_filename.parent.mkdir(parents=True, exist_ok=True)
+        
+        nifti_img.to_filename(str(nifiti_img_filename))
+        print(f"Saved predicted mask to {nifiti_img_filename}")
 
 if __name__ == '__main__':
     main() 
